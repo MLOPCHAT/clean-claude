@@ -1,0 +1,10 @@
+#!/bin/zsh
+# SessionEnd hook for brutal mode: copy this session's transcript into
+# <start folder>/Clean Claude Code/Transcripts/<profile>_<date>_<id>.jsonl
+in=$(cat)
+tp=$(print -r -- "$in" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+sid=$(print -r -- "$in" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+[[ -n $CLEAN_TRANSCRIPTS && -n $tp && -f $tp ]] || exit 0
+mkdir -p "$CLEAN_TRANSCRIPTS"
+cp "$tp" "$CLEAN_TRANSCRIPTS/${CLEAN_PROFILE:-throwaway}_$(date +%Y-%m-%d_%H%M%S)_${sid[1,8]}.jsonl"
+exit 0

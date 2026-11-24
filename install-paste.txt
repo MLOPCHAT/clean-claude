@@ -1,0 +1,311 @@
+mkdir -p ~/.clean-claude/bin
+printf '#\041/bin/zsh\n' > ~/.clean-claude/bin/clean
+cat >> ~/.clean-claude/bin/clean <<'CLEAN_CLAUDE_MAIN_EOF'
+# clean claude: Claude Code sessions in a fresh folder wherever you are,
+# with saved profiles (what loads, memory, sandbox) or a throwaway instance.
+# Install/repair: zsh ~/.clean-claude/bin/clean --setup
+SELF=${0:t}
+emulate -R zsh
+setopt extended_glob
+
+CH="$HOME/.clean-claude"
+PROF="$CH/profiles"
+ESC=$'\e'
+DIM="${ESC}[38;5;245m"; FAINT="${ESC}[38;5;239m"; WHITE="${ESC}[38;5;255m"
+GLOW=(30 36 37 43 44 50 51 87 123 159 195 159 123 87 51 50 44 43 37 36)
+UI=0; FRAME=0
+
+# ---------- install ----------
+setup() {
+  mkdir -p "$CH/bin" "$PROF" "$CH/memory" "$CH/run" "$CH/config" "$CH/skills-bridge/.claude-plugin" "$HOME/.local/bin"
+  chmod +x "$CH/bin/clean" "$CH/bin/brutal-save"
+  ln -sf "$CH/bin/clean" "$HOME/.local/bin/clean-claude"
+  local cmd="clean claude"
+  if [[ -e "$HOME/.local/bin/clean" ]]; then
+    if [[ "$HOME/.local/bin/clean" -ef "$CH/bin/clean" ]]; then :; else
+      cmd="clean-claude"
+      print "You already have a different 'clean' command, so it was left alone. Use 'clean-claude' instead."
+    fi
+  else
+    ln -sf "$CH/bin/clean" "$HOME/.local/bin/clean"
+  fi
+  print -r -- '{"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp?client=claude-code-plugin"}}}' > "$CH/context7.json"
+  print -r -- '{"name":"my-skills","description":"Your own ~/.claude/skills, carried into clean claude profiles","version":"1.0.0"}' > "$CH/skills-bridge/.claude-plugin/plugin.json"
+  [[ -f "$CH/config/settings.json" ]] || print -r -- '{}' > "$CH/config/settings.json"
+  if [[ ":$PATH:" == *":$HOME/.local/bin:"* ]]; then :; else
+    grep -qs 'HOME/.local/bin' "$HOME/.zshrc" || print -r -- 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+    print "Added ~/.local/bin to your PATH. Open a new Terminal window before typing: $cmd"
+  fi
+  if command -v claude >/dev/null; then :; else
+    print "Claude Code isn't installed on this computer yet. Install it first:  curl -fsSL https://claude.ai/install.sh | bash"
+  fi
+  print "clean claude is installed. cd into a project folder and type:  $cmd"
+}
+
+# ---------- screen ----------
+tsize() { local s; s=$(stty size </dev/tty 2>/dev/null); ROWS=${s%% *}; COLS=${s##* }
+  [[ -z $ROWS || $ROWS == 0 ]] && { ROWS=24; COLS=80; } }
+ui_on()  { printf '\e[?1049h\e[?25l\e[2J'; UI=1; }
+ui_off() { if [[ $UI == 1 ]]; then printf '\e[0m\e[0 q\e[?25h\e[?1049l'; UI=0; fi; }
+trap 'ui_off' EXIT
+trap 'ui_off; exit 130' INT TERM
+glowseq() { G="${ESC}[1;38;5;${GLOW[$(( FRAME % ${#GLOW} + 1 ))]}m"; }
+# put ROW TEXT STYLE: one centered line
+put() { local row=$1 text=$2 seq=$3 col
+  (( ${#text} > COLS - 4 )) && text="${text[1,COLS-7]}..."
+  col=$(( (COLS - ${#text}) / 2 + 1 )); (( col < 1 )) && col=1
+  printf '\e[%d;1H\e[2K\e[%d;%dH%s%s\e[0m' $row $row $col "$seq" "$text"; }
+
+# menu TITLE SUBTITLE "Label::description" ...  -> PICK, PICKED; returns 1 on esc/q
+menu() {
+  local title=$1 sub=$2; shift 2
+  local -a labels descs; local o
+  for o in "$@"; do labels+=("${o%%::*}"); if [[ $o == *::* ]]; then descs+=("${o#*::}"); else descs+=(""); fi; done
+  local n=${#labels} sel=1 k k2 k3 last="" i row top h
+  FRAME=0
+  while true; do
+    tsize; [[ "$ROWS $COLS" == "$last" ]] || { printf '\e[2J'; last="$ROWS $COLS"; }
+    glowseq
+    h=$(( 2 + n * 2 + 3 )); [[ -n $sub ]] && h=$(( h + 2 ))
+    top=$(( (ROWS - h) / 2 + 1 )); (( top < 1 )) && top=1; row=$top
+    put $row "$title" "$G"; row=$(( row + 2 ))
+    if [[ -n $sub ]]; then put $row "$sub" "$DIM"; row=$(( row + 2 )); fi
+    for (( i = 1; i <= n; i++ )); do
+      if (( i == sel )); then put $row "›  ${labels[i]}  ‹" "$G"; else put $row "${labels[i]}" "$DIM"; fi
+      row=$(( row + 2 ))
+    done
+    put $row "${descs[sel]}" "$WHITE"; row=$(( row + 2 ))
+    put $row "up/down to move    enter to choose    esc to go back" "$FAINT"
+    FRAME=$(( FRAME + 1 ))
+    if read -s -k 1 -t 0.07 k; then
+      case $k in
+        $ESC) if read -s -k 1 -t 0.03 k2; then read -s -k 1 -t 0.03 k3
+                case $k3 in A) (( sel = sel > 1 ? sel - 1 : n ));; B) (( sel = sel < n ? sel + 1 : 1 ));; esac
+              else return 1; fi ;;
+        k) (( sel = sel > 1 ? sel - 1 : n )) ;;
+        j) (( sel = sel < n ? sel + 1 : 1 )) ;;
+        $'\n'|$'\r') PICK=$sel; PICKED="${labels[sel]}"; return 0 ;;
+        q) return 1 ;;
+        [1-9]) if (( k <= n )); then PICK=$k; PICKED="${labels[k]}"; return 0; fi ;;
+      esac
+    fi
+  done
+}
+
+# ask TITLE SUBTITLE DEFAULT -> ANSWER; returns 1 on esc. Blinking cursor under the title.
+ask() {
+  local title=$1 sub=$2 def=$3 buf="" k k2 k3 top row col
+  printf '\e[2J'; FRAME=3; glowseq
+  while true; do
+    tsize; top=$(( (ROWS - 7) / 2 + 1 )); row=$top
+    printf '\e[?25l'
+    put $row "$title" "$G"; row=$(( row + 2 ))
+    put $row "$sub" "$DIM"; row=$(( row + 2 ))
+    if [[ -n $buf ]]; then put $row "$buf" "$WHITE"; col=$(( (COLS - ${#buf}) / 2 + 1 + ${#buf} ))
+    else put $row "$def" "$FAINT"; col=$(( (COLS - ${#def}) / 2 + 1 )); fi
+    put $(( row + 2 )) "type, then enter    enter alone keeps the grey name    esc to go back" "$FAINT"
+    printf '\e[%d;%dH\e[5 q\e[?25h' $row $col
+    read -s -k 1 k || return 1
+    case $k in
+      $'\n'|$'\r') ANSWER=${buf:-$def}; printf '\e[?25l\e[0 q'; return 0 ;;
+      $'\x7f'|$'\b') buf=${buf[1,-2]} ;;
+      $ESC) if read -s -k 1 -t 0.03 k2; then read -s -k 1 -t 0.03 k3; continue; fi
+            printf '\e[?25l\e[0 q'; return 1 ;;
+      [[:print:]]) (( ${#buf} < 40 )) && buf+=$k ;;
+    esac
+  done
+}
+
+# info LINE... : centered message, any key to continue
+info() { local k i row; tsize; printf '\e[2J\e[?25l'; FRAME=5; glowseq
+  row=$(( (ROWS - ${#@} * 2 - 2) / 2 + 1 ))
+  for (( i = 1; i <= $#; i++ )); do
+    if (( i == 1 )); then put $row "${@[i]}" "$G"; else put $row "${@[i]}" "$DIM"; fi; row=$(( row + 2 )); done
+  put $row "press any key" "$FAINT"; read -s -k 1 k; printf '\e[2J'; }
+
+# ---------- profiles ----------
+load_profile() { P_LEVEL=bare; P_MEMORY=off; P_SANDBOX=off; [[ -f "$PROF/$1.conf" ]] && source "$PROF/$1.conf"; }
+describe() { local l m
+  case $P_LEVEL in full) l="Everything";; mcp) l="MCP servers + skills";; *) l="Bare";; esac
+  case $P_MEMORY in default) m="built-in memory";; mcp) m="Claude Memory MCP";; brutal) m="brutal mode";; *) m="no memory";; esac
+  print -r -- "$l  ·  $m  ·  sandbox $P_SANDBOX"; }
+
+pick_sandbox() {
+  menu "Sandbox" "" \
+    "On::Commands Claude runs can only write inside the folder you started in (plus temp)" \
+    "Off::Claude asks before editing outside your folder, but commands can write anywhere" || return 1
+  if (( PICK == 1 )); then P_SANDBOX=on; else P_SANDBOX=off; fi
+}
+
+create_profile() {
+  local id
+  while true; do
+    ask "Name your profile" "letters, numbers and dashes" "my-profile" || return 1
+    id=${ANSWER// /-}; id=${id//[^A-Za-z0-9._-]/}; id=${id##.##}
+    [[ -z $id ]] && continue
+    if [[ -f "$PROF/$id.conf" ]]; then info "There's already a profile called $id." "Pick another name."; continue; fi
+    break
+  done
+  menu "What does $id load?" "" \
+    "Everything::Your whole setup on this computer: connectors, MCP servers, plugins, skills, hooks, CLAUDE.md" \
+    "MCP servers + skills::Your connectors, MCP servers and skills, plus a starter CLAUDE.md. No plugins or hooks" \
+    "Bare::Stock Claude Code plus Context7. Still saved, so it can keep memory" || return 1
+  case $PICK in 1) P_LEVEL=full;; 2) P_LEVEL=mcp;; *) P_LEVEL=bare;; esac
+  menu "Memory" "for $id" "Off::Every session starts fresh" "On::Choose how it's saved on the next screen" || return 1
+  P_MEMORY=off
+  if (( PICK == 2 )); then
+    while true; do
+      menu "How is memory saved?" "for $id" \
+        "Default::Claude Code's built-in memory, kept for this profile only" \
+        "Claude Memory MCP::The official MCP memory server (a knowledge-graph file). Needs Node.js" \
+        "Brutal mode::Saves every transcript. Next session, a Haiku side agent lists what was left unfinished" \
+        "Zep::Not built yet: needs a Zep account or server and an API key" \
+        "Redis::Not built yet: needs a Redis server and an embeddings API key" \
+        "OmniRoute::Not built yet: still to be pinned down" || return 1
+      case $PICK in
+        1) P_MEMORY=default; break ;;
+        2) P_MEMORY=mcp; break ;;
+        3) P_MEMORY=brutal; break ;;
+        *) info "$PICKED isn't built yet." "It's in the handoff note for the full build." "Pick another option for now." ;;
+      esac
+    done
+  fi
+  pick_sandbox || return 1
+  print -r -- "P_LEVEL=$P_LEVEL
+P_MEMORY=$P_MEMORY
+P_SANDBOX=$P_SANDBOX" > "$PROF/$id.conf"
+  PID=$id
+}
+
+choose_profile() {
+  local -a profs opts; local f
+  while true; do
+    profs=( "$PROF"/*.conf(N:t:r) )
+    if (( ${#profs} == 0 )); then
+      menu "clean claude" "first time here" \
+        "Create a profile::Name it, then choose what it loads, memory and sandbox" \
+        "Throwaway instance::Stock Claude Code, nothing kept" || return 1
+      if (( PICK == 1 )); then create_profile && return 0; continue; fi
+    else
+      opts=()
+      for f in $profs; do load_profile "$f"; opts+=("$f::$(describe)"); done
+      opts+=("+ New profile::Name it, then choose what it loads, memory and sandbox" "Throwaway instance::Stock Claude Code, nothing kept")
+      menu "clean claude" "choose a profile" "${opts[@]}" || return 1
+      if (( PICK <= ${#profs} )); then PID=${profs[PICK]}; load_profile "$PID"; return 0; fi
+      if (( PICK == ${#profs} + 1 )); then create_profile && return 0; continue; fi
+    fi
+    PID=""; P_LEVEL=bare; P_MEMORY=off
+    pick_sandbox && return 0
+  done
+}
+
+# ---------- launch ----------
+launch() {
+  local name=$1; shift
+  local root="$START/Clean Claude Code" dir tdir label v
+  dir="$root/$name"; tdir="$root/Transcripts"; label=${PID:-throwaway}
+  mkdir -p "$dir"; cd "$dir" || return 1
+
+  for v in ${(k)parameters[(I)CLAUDE*]} ${(k)parameters[(I)ORCA_*]}; do unset $v; done
+  unset ANTHROPIC_API_KEY
+
+  local -a args mcp; local s='"autoMemoryEnabled":false' extra="" first="" last
+  mcp=("$CH/context7.json")
+
+  case $P_MEMORY in
+    default) mkdir -p "$CH/memory/$PID"
+      s="\"autoMemoryEnabled\":true,\"autoMemoryDirectory\":\"$CH/memory/$PID\"" ;;
+    mcp) mkdir -p "$CH/memory/$PID"
+      print -r -- "{\"mcpServers\":{\"memory\":{\"command\":\"npx\",\"args\":[\"-y\",\"@modelcontextprotocol/server-memory\"],\"env\":{\"MEMORY_FILE_PATH\":\"$CH/memory/$PID/memory.jsonl\"}}}}" > "$CH/run/$PID-memory.json"
+      mcp+=("$CH/run/$PID-memory.json")
+      extra="This profile's long-term memory is the 'memory' MCP server. At the start of a session, read it (read_graph). When the user shares a lasting preference, decision or fact, save it there."
+      command -v npx >/dev/null || print "Heads up: Claude Memory MCP needs Node.js (npx), which isn't installed, so memory won't load." ;;
+    brutal)
+      s+=",\"hooks\":{\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"/bin/zsh $CH/bin/brutal-save\"}]}]}"
+      export CLEAN_TRANSCRIPTS="$tdir" CLEAN_PROFILE="$PID"
+      last=( "$tdir/${PID}"_*.jsonl(N.om[1]) )
+      if (( ${#last} )); then
+        first="Brutal-mode start-up. Use the Agent tool to launch one background subagent with model haiku. Its job: read the previous session's transcript at ${last[1]} (JSON lines) and list, in at most six short bullets, anything the user asked for that wasn't finished, follow-ups that were promised, and errors left unresolved, or say that everything was finished. While it runs, tell me in one short line that you're checking the last session, then wait for my request. When it reports back, show its list under the heading 'Left over from last session', without holding up anything I've asked for in the meantime."
+      fi ;;
+  esac
+  [[ $P_SANDBOX == on ]] && s+=',"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}'
+  [[ $P_MEMORY == default ]] || export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+
+  case $P_LEVEL in
+    full) ;;
+    mcp)
+      export CLAUDE_CONFIG_DIR="$CH/config" CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+      args+=(--setting-sources user)
+      extra="$(cat "$CH/CLAUDE.md")${extra:+
+
+$extra}"
+      if command -v plutil >/dev/null && plutil -extract mcpServers json -o "$CH/run/user-mcp-raw.json" "$HOME/.claude.json" 2>/dev/null; then
+        { print -n '{"mcpServers":'; cat "$CH/run/user-mcp-raw.json"; print '}'; } > "$CH/run/user-mcp.json"
+        mcp+=("$CH/run/user-mcp.json")
+      fi
+      if [[ -d "$HOME/.claude/skills" ]]; then
+        ln -sfn "$HOME/.claude/skills" "$CH/skills-bridge/skills"; args+=(--plugin-dir "$CH/skills-bridge")
+      fi ;;
+    *)
+      export CLAUDE_CONFIG_DIR="$CH/config" CLAUDE_CODE_DISABLE_CLAUDE_MDS=1
+      args+=(--setting-sources user --strict-mcp-config)
+      s+=',"disableClaudeAiConnectors":true' ;;
+  esac
+
+  args=(--name "clean: $label / $name" --add-dir "$START" "${args[@]}")
+  [[ -n $extra ]] && args+=(--append-system-prompt "$extra")
+  args+=(--mcp-config "${mcp[@]}" --settings "{$s}")
+
+  print "clean claude  ·  ${label}  ·  $dir"
+  if [[ -n $CLEAN_DRYRUN ]]; then print -r -- "ENV CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-<normal>}"; print -rl -- claude "${args[@]}" "$@" ${first:+"$first"}; return 0; fi
+  if [[ -n $first ]]; then exec claude "${args[@]}" "$@" "$first"; else exec claude "${args[@]}" "$@"; fi
+}
+
+main() {
+  [[ $(uname) == Darwin ]] || { print "clean claude runs on macOS only."; return 1; }
+  case $1 in
+    --setup) setup; return ;;
+    claude) shift ;;
+    "") [[ $SELF == clean-claude ]] || { print "usage: clean claude"; return 2; } ;;
+    *) print "usage: clean claude   (or: clean-claude)"; return 2 ;;
+  esac
+  START=$PWD
+  if [[ $START == $HOME || $START == / ]]; then print "Not in your home folder or /. cd into a project folder first."; return 1; fi
+  [[ -t 0 ]] || { print "clean claude needs to be run in a terminal."; return 1; }
+  command -v claude >/dev/null || { print "Claude Code isn't installed:  curl -fsSL https://claude.ai/install.sh | bash"; return 1; }
+  mkdir -p "$PROF" "$CH/run"
+  ui_on
+  choose_profile || { ui_off; return 0; }
+  ask "Name this session's folder" "it goes in  Clean Claude Code/  here" "session-$(date +%Y-%m-%d-%H%M)" || { ui_off; return 0; }
+  local name=${ANSWER//\//-}; name=${name##.##}; [[ -z $name ]] && name="session-$(date +%Y-%m-%d-%H%M)"
+  ui_off
+  launch "$name" "$@"
+}
+
+main "$@"
+CLEAN_CLAUDE_MAIN_EOF
+printf '#\041/bin/zsh\n' > ~/.clean-claude/bin/brutal-save
+cat >> ~/.clean-claude/bin/brutal-save <<'CLEAN_CLAUDE_BRUTAL_EOF'
+# SessionEnd hook for brutal mode: copy this session's transcript into
+# <start folder>/Clean Claude Code/Transcripts/<profile>_<date>_<id>.jsonl
+in=$(cat)
+tp=$(print -r -- "$in" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+sid=$(print -r -- "$in" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+[[ -n $CLEAN_TRANSCRIPTS && -n $tp && -f $tp ]] || exit 0
+mkdir -p "$CLEAN_TRANSCRIPTS"
+cp "$tp" "$CLEAN_TRANSCRIPTS/${CLEAN_PROFILE:-throwaway}_$(date +%Y-%m-%d_%H%M%S)_${sid[1,8]}.jsonl"
+exit 0
+CLEAN_CLAUDE_BRUTAL_EOF
+cat > ~/.clean-claude/CLAUDE.md <<'CLEAN_CLAUDE_MD_EOF'
+# Working rules for this session
+
+- Be direct and honest. No flattery, no filler.
+- Before building something, check whether a maintained package or a built-in feature already does it.
+- Verify by running things (tests, logs, the app), not only by reading or type-checking. Report failures plainly, with the output.
+- Ask only when you're truly blocked or a choice is hard to reverse. Otherwise decide, and say what you decided.
+- Stay inside the folder this session started in unless the user points you elsewhere.
+- Never commit, push, delete or overwrite without the user asking. Stage explicit paths only.
+- Never write secrets into files.
+- Keep answers short: the result first, then anything the user has to do.
+CLEAN_CLAUDE_MD_EOF
+zsh ~/.clean-claude/bin/clean --setup
