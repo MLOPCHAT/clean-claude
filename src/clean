@@ -14,16 +14,14 @@ GLOW=(30 36 37 43 44 50 51 87 123 159 195 159 123 87 51 50 44 43 37 36)
 UI=0; FRAME=0
 
 # ---------- install ----------
+# setup [quiet]: installs/repairs. "quiet" skips the next-steps message (used when the menu starts right after).
 setup() {
+  local cmd="clean claude" newwin=0 taken=0
   mkdir -p "$CH/bin" "$PROF" "$CH/memory" "$CH/run" "$CH/config" "$CH/skills-bridge/.claude-plugin" "$HOME/.local/bin"
   chmod +x "$CH/bin/clean" "$CH/bin/brutal-save"
   ln -sf "$CH/bin/clean" "$HOME/.local/bin/clean-claude"
-  local cmd="clean claude"
-  if [[ -e "$HOME/.local/bin/clean" ]]; then
-    if [[ "$HOME/.local/bin/clean" -ef "$CH/bin/clean" ]]; then :; else
-      cmd="clean-claude"
-      print "You already have a different 'clean' command, so it was left alone. Use 'clean-claude' instead."
-    fi
+  if [[ -e "$HOME/.local/bin/clean" || -L "$HOME/.local/bin/clean" ]]; then
+    [[ "$HOME/.local/bin/clean" -ef "$CH/bin/clean" ]] || { cmd="clean-claude"; taken=1; }
   else
     ln -sf "$CH/bin/clean" "$HOME/.local/bin/clean"
   fi
@@ -32,12 +30,23 @@ setup() {
   [[ -f "$CH/config/settings.json" ]] || print -r -- '{}' > "$CH/config/settings.json"
   if [[ ":$PATH:" == *":$HOME/.local/bin:"* ]]; then :; else
     grep -qs 'HOME/.local/bin' "$HOME/.zshrc" || print -r -- 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
-    print "Added ~/.local/bin to your PATH. Open a new Terminal window before typing: $cmd"
+    newwin=1
   fi
-  if command -v claude >/dev/null; then :; else
-    print "Claude Code isn't installed on this computer yet. Install it first:  curl -fsSL https://claude.ai/install.sh | bash"
+  [[ $1 == quiet ]] && return 0
+  local n=1
+  print ""
+  print "  clean claude is installed."
+  print ""
+  print "  Next:"
+  command -v claude >/dev/null || { print "    $n. Install Claude Code:  curl -fsSL https://claude.ai/install.sh | bash"; (( n++ )); }
+  if (( newwin )); then print "    $n. Open a new Terminal window."; (( n++ )); fi
+  print "    $n. cd into a project folder."; (( n++ ))
+  print "    $n. Type:  $cmd"
+  if (( taken )); then
+    print ""
+    print "  (This Mac already has a command called 'clean', so this one is called clean-claude.)"
   fi
-  print "clean claude is installed. cd into a project folder and type:  $cmd"
+  print ""
 }
 
 # ---------- screen ----------
@@ -262,7 +271,7 @@ $extra}"
 main() {
   [[ $(uname) == Darwin ]] || { print "clean claude runs on macOS only."; return 1; }
   case $1 in
-    --setup) setup; return ;;
+    --setup) setup "$2"; return ;;
     claude) shift ;;
     "") [[ $SELF == clean-claude ]] || { print "usage: clean claude"; return 2; } ;;
     *) print "usage: clean claude   (or: clean-claude)"; return 2 ;;

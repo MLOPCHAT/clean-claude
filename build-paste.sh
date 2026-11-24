@@ -13,4 +13,11 @@ done
   print -r -- "cat > ~/.clean-claude/CLAUDE.md <<'CLEAN_CLAUDE_MD_EOF'"; cat src/CLAUDE.md; print -r -- 'CLEAN_CLAUDE_MD_EOF'
   print -r -- 'zsh ~/.clean-claude/bin/clean --setup'
 } > install-paste.txt
+{
+  print -r -- '#!/bin/sh'
+  print -r -- '# clean claude installer (macOS). Usage: curl -sL <url> | sh'
+  print -r -- '[ "$(uname)" = Darwin ] || { echo "clean claude runs on macOS only."; exit 1; }'
+  cat install-paste.txt
+} > install
+cp install install.sh; chmod +x install install.sh
 print "built install-paste.txt ($(wc -l < install-paste.txt | tr -d ' ') lines)"

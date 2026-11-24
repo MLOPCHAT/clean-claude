@@ -1,6 +1,6 @@
 {
   "name": "clean-claude",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Start Claude Code in a clean, fresh folder with saved profiles: what loads, memory and sandbox. macOS only.",
   "bin": { "clean-claude": "bin/clean-claude" },
   "files": ["bin/", "src/", "README.md", "LICENSE"],

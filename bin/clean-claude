@@ -1,6 +1,6 @@
 #!/bin/zsh
 # npx clean-claude: installs clean claude into ~/.clean-claude, then starts it
-# if you're in a project folder.
+# straight away if you're in a project folder.
 emulate -R zsh
 if [[ $(uname) != Darwin ]]; then print "clean claude runs on macOS only."; exit 1; fi
 PKG=${0:A:h:h}
@@ -8,10 +8,8 @@ CH="$HOME/.clean-claude"
 mkdir -p "$CH/bin" || exit 1
 cp "$PKG/src/clean" "$CH/bin/clean" && cp "$PKG/src/brutal-save" "$CH/bin/brutal-save" || exit 1
 [[ -f "$CH/CLAUDE.md" ]] || cp "$PKG/src/CLAUDE.md" "$CH/CLAUDE.md"
-zsh "$CH/bin/clean" --setup || exit 1
 if [[ $PWD == $HOME || $PWD == / || ! -t 0 ]]; then
-  print "Now cd into a project folder and type the command above."
-  exit 0
+  exec zsh "$CH/bin/clean" --setup
 fi
-print ""
+zsh "$CH/bin/clean" --setup quiet || exit 1
 exec zsh "$CH/bin/clean" claude "$@"
