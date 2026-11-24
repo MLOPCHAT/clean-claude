@@ -15,7 +15,7 @@ npx clean-claude
 On a Mac with nothing set up:
 
 ```sh
-curl -sL clean-claude.github.io/install | sh
+curl -sL mlopchat.github.io/clean-claude/install | sh
 ```
 
 This installs to `~/.clean-claude` and adds a `clean` command (plus `clean-claude`) in `~/.local/bin`. If you're already in a project folder, it starts the menu straight away.
